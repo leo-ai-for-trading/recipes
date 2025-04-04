@@ -1,7 +1,7 @@
-parsley
-tomato
-salt
-olive oil
-bulgur
-mint
-onions
+- parsley
+- tomato
+- salt
+- olive oil
+- bulgur
+- mint
+-onions
