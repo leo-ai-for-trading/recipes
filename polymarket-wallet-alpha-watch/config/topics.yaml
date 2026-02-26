@@ -1,0 +1,7 @@
+topics:
+  google:
+    keywords: ["google", "GOOG", "GOOGL", "Google Search"]
+    tag_slugs: ["google", "googl", "google-search"]
+    tag_ids: []
+    include_related_tags: true
+    include_closed_markets: true
