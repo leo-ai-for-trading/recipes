@@ -49,3 +49,10 @@ class ParticleBeliefModel:
     def sample(self, belief: BeliefState, n: int) -> np.ndarray:
         idx = self.rng.choice(len(belief.particles), size=n, p=belief.weights, replace=True)
         return belief.particles[idx]
+
+    def features(self, belief: BeliefState) -> np.ndarray:
+        mean = np.sum(belief.particles * belief.weights[:, None], axis=0)
+        centered = belief.particles - mean[None, :]
+        var = np.sum((centered**2) * belief.weights[:, None], axis=0)
+        std = np.sqrt(np.clip(var, 1e-8, None))
+        return np.concatenate([mean, std]).astype(np.float32)

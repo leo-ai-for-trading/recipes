@@ -10,6 +10,9 @@ import torch
 import typer
 from rich import print as rprint
 
+from polyagent.belief.likelihood_net import LikelihoodNet
+from polyagent.belief.belief_state import BeliefState
+from polyagent.belief.particle_filter import ParticleBeliefModel
 from polyagent.config import Settings, load_config
 from polyagent.data.loaders import load_market_data
 from polyagent.data.make_demo_data import make_demo_data
@@ -46,7 +49,9 @@ def train(
 
     df = load_market_data(data)
     env = ReplayEnv(df, cfg.env)
-    obs_dim = int(env.observation_space.shape[0])
+    raw_obs_dim = int(env.observation_space.shape[0])
+    belief_feature_dim = cfg.belief.latent_dim * 2
+    obs_dim = raw_obs_dim + belief_feature_dim
     action_dim = int(env.action_space.n)
 
     device = torch.device("cpu")
@@ -54,6 +59,18 @@ def train(
     value_net = ValueNet(obs_dim=obs_dim, hidden_dim=cfg.model.hidden_dim).to(device)
     trainer = PPOKLTrainer(policy=policy, value_net=value_net, cfg=cfg.rl, device=device)
     buffer = RolloutBuffer()
+    likelihood_net = LikelihoodNet(
+        obs_dim=raw_obs_dim,
+        latent_dim=cfg.belief.latent_dim,
+        hidden_dims=cfg.belief.likelihood_hidden_dims,
+    )
+    belief_model = ParticleBeliefModel(
+        n_particles=cfg.belief.n_particles,
+        latent_dim=cfg.belief.latent_dim,
+        transition_noise=cfg.belief.transition_noise,
+        likelihood_net=likelihood_net,
+        seed=cfg.seed,
+    )
 
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     run_dir = Path(cfg.logging.run_dir) / run_id
@@ -66,14 +83,16 @@ def train(
         log_dir=run_dir / "tb",
     )
 
-    obs, _ = env.reset(seed=cfg.seed)
+    raw_obs, _ = env.reset(seed=cfg.seed)
+    belief = belief_model.init_belief()
+    obs = _augment_obs(raw_obs=raw_obs, belief_model=belief_model, belief=belief)
     train_rewards: list[float] = []
     for update in range(cfg.rl.train_steps):
         buffer.clear()
         batch_reward = 0.0
         for _ in range(cfg.rl.batch_size):
             action, log_prob, value, logits = trainer.action_and_value(obs)
-            next_obs, reward, done, _, _ = env.step(action)
+            next_raw_obs, reward, done, _, _ = env.step(action)
             buffer.add(
                 obs=obs,
                 action=action,
@@ -83,10 +102,13 @@ def train(
                 value=value,
                 logits=logits,
             )
-            obs = next_obs
+            belief = belief_model.update(belief, next_raw_obs)
+            obs = _augment_obs(raw_obs=next_raw_obs, belief_model=belief_model, belief=belief)
             batch_reward += reward
             if done:
-                obs, _ = env.reset(seed=cfg.seed)
+                raw_obs, _ = env.reset(seed=cfg.seed)
+                belief = belief_model.init_belief()
+                obs = _augment_obs(raw_obs=raw_obs, belief_model=belief_model, belief=belief)
 
         arrays = buffer.as_arrays()
         last_value = trainer.value(obs)
@@ -124,9 +146,13 @@ def train(
     checkpoint = {
         "policy_state": policy.state_dict(),
         "value_state": value_net.state_dict(),
+        "likelihood_state": likelihood_net.state_dict(),
         "obs_dim": obs_dim,
+        "raw_obs_dim": raw_obs_dim,
         "action_dim": action_dim,
         "hidden_dim": cfg.model.hidden_dim,
+        "belief_latent_dim": cfg.belief.latent_dim,
+        "belief_hidden_dims": cfg.belief.likelihood_hidden_dims,
         "config_path": str(config),
     }
     latest_ckpt = ckpt_dir / "latest.pt"
@@ -164,8 +190,24 @@ def evaluate(
     )
     policy.load_state_dict(ckpt["policy_state"])
     policy.eval()
+    likelihood_net = LikelihoodNet(
+        obs_dim=int(ckpt["raw_obs_dim"]),
+        latent_dim=int(ckpt["belief_latent_dim"]),
+        hidden_dims=list(ckpt["belief_hidden_dims"]),
+    )
+    if "likelihood_state" in ckpt:
+        likelihood_net.load_state_dict(ckpt["likelihood_state"])
+    belief_model = ParticleBeliefModel(
+        n_particles=cfg.belief.n_particles,
+        latent_dim=int(ckpt["belief_latent_dim"]),
+        transition_noise=cfg.belief.transition_noise,
+        likelihood_net=likelihood_net,
+        seed=cfg.seed,
+    )
 
-    obs, _ = env.reset(seed=cfg.seed)
+    raw_obs, _ = env.reset(seed=cfg.seed)
+    belief = belief_model.init_belief()
+    obs = _augment_obs(raw_obs=raw_obs, belief_model=belief_model, belief=belief)
     total_reward = 0.0
     steps = 0
     done = False
@@ -174,7 +216,9 @@ def evaluate(
         with torch.no_grad():
             logits = policy(obs_t)
             action = int(torch.argmax(logits, dim=-1).item())
-        obs, reward, done, _, _ = env.step(action)
+        next_raw_obs, reward, done, _, _ = env.step(action)
+        belief = belief_model.update(belief, next_raw_obs)
+        obs = _augment_obs(raw_obs=next_raw_obs, belief_model=belief_model, belief=belief)
         total_reward += reward
         steps += 1
 
@@ -225,6 +269,16 @@ def _maybe_tensorboard_writer(enabled: bool, log_dir: Path):  # type: ignore[no-
         return None
     log_dir.mkdir(parents=True, exist_ok=True)
     return SummaryWriter(log_dir=str(log_dir))
+
+
+def _augment_obs(
+    *,
+    raw_obs: np.ndarray,
+    belief_model: ParticleBeliefModel,
+    belief: BeliefState,
+) -> np.ndarray:
+    belief_features = belief_model.features(belief)
+    return np.concatenate([raw_obs.astype(np.float32), belief_features], axis=0)
 
 
 def main() -> None:
