@@ -21,7 +21,7 @@ from polyagent.models.policy_net import PolicyNet
 from polyagent.models.value_net import ValueNet
 from polyagent.rl.buffers import RolloutBuffer
 from polyagent.rl.ppo_kl import PPOKLTrainer
-from polyagent.rl.utils import compute_gae, normalize, set_seed
+from polyagent.rl.utils import advantage_filter_mask, compute_gae, normalize, set_seed
 from polyagent.search.decision_time_search import DecisionTimeSearcher
 
 app = typer.Typer(help="PolyAgent research sandbox CLI.")
@@ -123,7 +123,15 @@ def train(
         )
         arrays["advantages"] = normalize(advantages)
         arrays["returns"] = returns
-        stats = trainer.update(arrays)
+        mask = advantage_filter_mask(
+            arrays["advantages"],
+            enabled=cfg.advantage_filter.enabled,
+            quantile=cfg.advantage_filter.quantile,
+            min_abs_adv=cfg.advantage_filter.min_abs_adv,
+        )
+        filtered = {key: value[mask] for key, value in arrays.items()}
+        kept_ratio = float(mask.mean())
+        stats = trainer.update(filtered)
 
         train_rewards.append(batch_reward)
         if writer is not None:
@@ -134,10 +142,11 @@ def train(
             writer.add_scalar("train/entropy", stats.entropy, update)
             writer.add_scalar("train/kl", stats.kl, update)
             writer.add_scalar("train/kl_coeff", stats.kl_coeff, update)
+            writer.add_scalar("train/adv_kept_ratio", kept_ratio, update)
 
         rprint(
             f"[cyan]update {update + 1}/{cfg.rl.train_steps}[/cyan] "
-            f"reward_batch={batch_reward:.4f} kl={stats.kl:.5f}"
+            f"reward_batch={batch_reward:.4f} kl={stats.kl:.5f} adv_kept={kept_ratio:.2f}"
         )
 
     if writer is not None:

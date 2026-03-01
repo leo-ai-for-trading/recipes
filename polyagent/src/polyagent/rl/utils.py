@@ -38,3 +38,25 @@ def compute_gae(
 
 def normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return (x - x.mean()) / (x.std() + eps)
+
+
+def advantage_filter_mask(
+    advantages: np.ndarray,
+    *,
+    enabled: bool,
+    quantile: float,
+    min_abs_adv: float,
+) -> np.ndarray:
+    n = len(advantages)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    if not enabled:
+        return np.ones(n, dtype=bool)
+
+    abs_adv = np.abs(advantages)
+    q = float(np.quantile(abs_adv, np.clip(quantile, 0.0, 1.0)))
+    threshold = max(min_abs_adv, q)
+    mask = abs_adv >= threshold
+    if not np.any(mask):
+        mask[int(np.argmax(abs_adv))] = True
+    return mask
