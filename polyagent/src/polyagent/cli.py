@@ -225,7 +225,7 @@ def evaluate(
         likelihood_net=likelihood_net,
         seed=cfg.seed,
     )
-    search_enabled = use_search and cfg.search.enabled
+    search_enabled = use_search or cfg.search.enabled
     searcher = (
         DecisionTimeSearcher(
             cfg=cfg.search,
