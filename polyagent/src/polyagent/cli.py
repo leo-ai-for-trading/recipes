@@ -22,6 +22,7 @@ from polyagent.models.value_net import ValueNet
 from polyagent.rl.buffers import RolloutBuffer
 from polyagent.rl.ppo_kl import PPOKLTrainer
 from polyagent.rl.utils import compute_gae, normalize, set_seed
+from polyagent.search.decision_time_search import DecisionTimeSearcher
 
 app = typer.Typer(help="PolyAgent research sandbox CLI.")
 data_app = typer.Typer(help="Data utilities.")
@@ -190,6 +191,12 @@ def evaluate(
     )
     policy.load_state_dict(ckpt["policy_state"])
     policy.eval()
+    value_net = ValueNet(
+        obs_dim=int(ckpt["obs_dim"]),
+        hidden_dim=int(ckpt["hidden_dim"]),
+    )
+    value_net.load_state_dict(ckpt["value_state"])
+    value_net.eval()
     likelihood_net = LikelihoodNet(
         obs_dim=int(ckpt["raw_obs_dim"]),
         latent_dim=int(ckpt["belief_latent_dim"]),
@@ -204,25 +211,49 @@ def evaluate(
         likelihood_net=likelihood_net,
         seed=cfg.seed,
     )
+    search_enabled = use_search and cfg.search.enabled
+    searcher = (
+        DecisionTimeSearcher(
+            cfg=cfg.search,
+            env_cfg=cfg.env,
+            belief_model=belief_model,
+            value_net=value_net,
+            device=torch.device("cpu"),
+            seed=cfg.seed,
+        )
+        if search_enabled
+        else None
+    )
 
     raw_obs, _ = env.reset(seed=cfg.seed)
     belief = belief_model.init_belief()
     obs = _augment_obs(raw_obs=raw_obs, belief_model=belief_model, belief=belief)
     total_reward = 0.0
     steps = 0
+    kls: list[float] = []
     done = False
     while not done and steps < cfg.env.episode_length:
-        obs_t = torch.from_numpy(obs.astype(np.float32)).unsqueeze(0)
-        with torch.no_grad():
-            logits = policy(obs_t)
-            action = int(torch.argmax(logits, dim=-1).item())
+        if searcher is not None:
+            search_out = searcher.run(policy=policy, raw_obs=raw_obs, belief=belief)
+            action = int(np.argmax(search_out.pi_search))
+            kls.append(search_out.kl)
+        else:
+            obs_t = torch.from_numpy(obs.astype(np.float32)).unsqueeze(0)
+            with torch.no_grad():
+                logits = policy(obs_t)
+                action = int(torch.argmax(logits, dim=-1).item())
         next_raw_obs, reward, done, _, _ = env.step(action)
         belief = belief_model.update(belief, next_raw_obs)
         obs = _augment_obs(raw_obs=next_raw_obs, belief_model=belief_model, belief=belief)
+        raw_obs = next_raw_obs
         total_reward += reward
         steps += 1
 
-    rprint(f"[green]Eval complete[/green] reward={total_reward:.6f} steps={steps}")
+    avg_kl = float(np.mean(kls)) if kls else 0.0
+    rprint(
+        f"[green]Eval complete[/green] reward={total_reward:.6f} "
+        f"steps={steps} search={search_enabled} avg_search_kl={avg_kl:.6f}"
+    )
 
 
 @app.command("report")
