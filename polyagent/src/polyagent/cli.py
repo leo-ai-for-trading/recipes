@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -19,6 +18,12 @@ from polyagent.data.make_demo_data import make_demo_data
 from polyagent.env.replay_env import ReplayEnv
 from polyagent.models.policy_net import PolicyNet
 from polyagent.models.value_net import ValueNet
+from polyagent.orchestration.llm_agent import (
+    generate_orchestration_payload,
+    load_metrics,
+    save_json_report,
+)
+from polyagent.orchestration.report_templates import render_report_markdown
 from polyagent.rl.buffers import RolloutBuffer
 from polyagent.rl.ppo_kl import PPOKLTrainer
 from polyagent.rl.utils import advantage_filter_mask, compute_gae, normalize, set_seed
@@ -268,36 +273,32 @@ def evaluate(
 @app.command("report")
 def report(
     run_dir: Path = typer.Option(..., exists=True, help="Run directory containing metrics.json."),
-    out: Path = typer.Option(Path("reports/latest_report.md"), help="Output markdown report."),
+    out: Path | None = typer.Option(None, help="Output markdown report path."),
 ) -> None:
     settings = Settings()
-    metrics_path = run_dir / "metrics.json"
-    metrics: dict[str, Any]
-    if metrics_path.exists():
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-    else:
-        metrics = {}
-    lines = [
-        f"# PolyAgent Report ({run_dir.name})",
-        "",
-        "## Summary",
-        "Training/evaluation report generated from local run metrics.",
-        "",
-        "## Metrics",
-    ]
-    for key, value in sorted(metrics.items()):
-        lines.append(f"- {key}: {value}")
-    lines.extend(
-        [
-            "",
-            "## Notes",
-            "- LLM orchestration is optional and not in the execution loop.",
-            f"- openai_enabled: {bool(settings.openai_api_key)}",
-        ]
+    metrics = load_metrics(run_dir)
+    payload, llm_used = generate_orchestration_payload(
+        settings=settings,
+        metrics=metrics,
+        run_notes="Local report generation from run metrics.",
     )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(lines), encoding="utf-8")
-    rprint(f"[green]Report written:[/green] {out}")
+    summary = str(payload.get("summary", "No summary available."))
+    next_runs = payload.get("next_runs", [])
+    if not isinstance(next_runs, list):
+        next_runs = []
+
+    report_path = out or Path("reports") / f"{run_dir.name}_report.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_md = render_report_markdown(
+        run_id=run_dir.name,
+        metrics=metrics,
+        summary=summary,
+        next_runs=next_runs,
+        llm_used=llm_used,
+    )
+    report_path.write_text(report_md, encoding="utf-8")
+    save_json_report(report_path.with_suffix(".json"), payload)
+    rprint(f"[green]Report written:[/green] {report_path}")
 
 
 def _maybe_tensorboard_writer(enabled: bool, log_dir: Path):  # type: ignore[no-untyped-def]
