@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "polyagent"
+version = "0.1.0"
+description = "Research sandbox for agentic trading on prediction market replay data."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26.0",
+  "pandas>=2.2.0",
+  "pyarrow>=16.0.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.4.0",
+  "PyYAML>=6.0.2",
+  "typer>=0.12.3",
+  "rich>=13.7.1",
+  "gymnasium>=0.29.1",
+  "torch>=2.2.0",
+  "tensorboard>=2.17.0",
+  "openai>=1.50.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.6.0",
+]
+
+[project.scripts]
+polyagent = "polyagent.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
