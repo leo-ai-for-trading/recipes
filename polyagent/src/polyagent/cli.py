@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -78,7 +78,7 @@ def train(
         seed=cfg.seed,
     )
 
-    run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = Path(cfg.logging.run_dir) / run_id
     ckpt_dir = Path(cfg.logging.checkpoint_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
