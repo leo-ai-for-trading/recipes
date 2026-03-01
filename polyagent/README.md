@@ -78,6 +78,15 @@ Evaluate:
 
 ```bash
 polyagent eval --data data/demo.parquet --checkpoint checkpoints/latest.pt --use-search true
+
+Apply report suggestions to produce an improved config:
+
+```bash
+polyagent improve-from-report \
+  --report-json reports/20260301_164727_report.json \
+  --base-config configs/mvp.yaml \
+  --out configs/mvp_improved.yaml
+```
 ```
 
 Generate report (non-LLM always, LLM optional if `OPENAI_API_KEY` set):
@@ -92,6 +101,7 @@ polyagent report --run-dir runs/<run_id>
 - Action space (discrete): hold, post bid/ask variants, cancel.
 - Reward: step PnL - inventory penalty - impact penalty - fees.
 - PPO includes explicit KL penalty with adaptive coefficient.
+- PPO update now early-stops epochs when KL significantly overshoots target.
 - Decision-time search computes:
   - `pi_search ∝ pi_base * exp(Q / alpha_kl)`
   - then KL-caps via blending.

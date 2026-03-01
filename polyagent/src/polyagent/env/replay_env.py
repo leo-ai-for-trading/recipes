@@ -57,6 +57,12 @@ class ReplayEnv(gym.Env[np.ndarray, int]):
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         row = self.df.iloc[self._idx]
         next_row = self.df.iloc[self._idx + 1]
+        requested_action = action
+
+        if self._position.inventory >= self.cfg.max_inventory and action in (1, 2):
+            action = 0
+        elif self._position.inventory <= -self.cfg.max_inventory and action in (3, 4):
+            action = 0
 
         if action == 5:
             self._position = PositionState()
@@ -94,6 +100,8 @@ class ReplayEnv(gym.Env[np.ndarray, int]):
         truncated = False
         obs = self._build_obs(self._idx)
         info = self._info(mtm_pnl, inventory_penalty, impact_penalty, fee)
+        info["requested_action"] = requested_action
+        info["executed_action"] = action
         return obs, float(reward), terminated, truncated, info
 
     def _build_obs(self, idx: int) -> np.ndarray:

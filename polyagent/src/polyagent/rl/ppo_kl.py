@@ -22,6 +22,7 @@ class PPOStats:
     entropy: float
     kl: float
     kl_coeff: float
+    early_stopped: bool
 
 
 class PPOKLTrainer:
@@ -59,6 +60,7 @@ class PPOKLTrainer:
         v_losses: list[float] = []
         entropies: list[float] = []
         kls: list[float] = []
+        early_stopped = False
 
         for _ in range(self.cfg.epochs):
             np.random.shuffle(idx_all)
@@ -109,6 +111,11 @@ class PPOKLTrainer:
                 entropies.append(float(entropy.detach().cpu()))
                 kls.append(float(kl.detach().cpu()))
 
+            epoch_kl = float(np.mean(kls)) if kls else 0.0
+            if epoch_kl > 2.0 * self.cfg.kl_target:
+                early_stopped = True
+                break
+
         mean_kl = float(np.mean(kls)) if kls else 0.0
         self._adapt_kl_coeff(mean_kl)
 
@@ -119,6 +126,7 @@ class PPOKLTrainer:
             entropy=float(np.mean(entropies)) if entropies else 0.0,
             kl=mean_kl,
             kl_coeff=float(self.kl_coeff),
+            early_stopped=early_stopped,
         )
 
     def action_and_value(self, obs: np.ndarray) -> tuple[int, float, float, np.ndarray]:

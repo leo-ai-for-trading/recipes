@@ -12,7 +12,7 @@ from rich import print as rprint
 from polyagent.belief.likelihood_net import LikelihoodNet
 from polyagent.belief.belief_state import BeliefState
 from polyagent.belief.particle_filter import ParticleBeliefModel
-from polyagent.config import Settings, load_config
+from polyagent.config import Settings, apply_dot_overrides, load_config, save_config
 from polyagent.data.loaders import load_market_data
 from polyagent.data.make_demo_data import make_demo_data
 from polyagent.env.replay_env import ReplayEnv
@@ -42,6 +42,41 @@ def data_make_demo(
 ) -> None:
     path = make_demo_data(out_path=out, n_steps=n_steps, seed=seed)
     rprint(f"[green]Demo dataset created:[/green] {path}")
+
+
+@app.command("improve-from-report")
+def improve_from_report(
+    report_json: Path = typer.Option(..., exists=True, help="Report JSON with next_runs."),
+    base_config: Path = typer.Option(
+        Path("configs/mvp.yaml"), exists=True, help="Base config yaml to modify."
+    ),
+    out: Path = typer.Option(
+        Path("configs/mvp_improved.yaml"),
+        help="Output config path with applied report suggestions.",
+    ),
+) -> None:
+    cfg = load_config(base_config)
+    payload = json.loads(report_json.read_text(encoding="utf-8"))
+    next_runs = payload.get("next_runs", [])
+    if not isinstance(next_runs, list):
+        raise typer.Exit(code=1)
+
+    merged_overrides: dict[str, object] = {}
+    for item in next_runs:
+        if not isinstance(item, dict):
+            continue
+        changes = item.get("changes", {})
+        if isinstance(changes, dict):
+            merged_overrides.update(changes)
+
+    if not merged_overrides:
+        rprint("[yellow]No overrides found in report JSON. Nothing changed.[/yellow]")
+        return
+
+    improved = apply_dot_overrides(cfg, merged_overrides)
+    saved = save_config(improved, out)
+    rprint(f"[green]Improved config written:[/green] {saved}")
+    rprint(f"[cyan]Applied overrides:[/cyan] {json.dumps(merged_overrides, indent=2)}")
 
 
 @app.command("train")
@@ -148,10 +183,12 @@ def train(
             writer.add_scalar("train/kl", stats.kl, update)
             writer.add_scalar("train/kl_coeff", stats.kl_coeff, update)
             writer.add_scalar("train/adv_kept_ratio", kept_ratio, update)
+            writer.add_scalar("train/early_stopped", int(stats.early_stopped), update)
 
         rprint(
             f"[cyan]update {update + 1}/{cfg.rl.train_steps}[/cyan] "
-            f"reward_batch={batch_reward:.4f} kl={stats.kl:.5f} adv_kept={kept_ratio:.2f}"
+            f"reward_batch={batch_reward:.4f} kl={stats.kl:.5f} "
+            f"adv_kept={kept_ratio:.2f} early_stop={stats.early_stopped}"
         )
 
     if writer is not None:

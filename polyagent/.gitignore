@@ -9,4 +9,5 @@ __pycache__/
 runs/
 checkpoints/
 reports/*.md
+reports/*.json
 data/*.parquet

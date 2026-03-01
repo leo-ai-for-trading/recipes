@@ -1,29 +1,26 @@
 seed: 7
-
 env:
   tick_size: 0.01
   book_levels: 3
   maker_fee_bps: 1.0
   taker_fee_bps: 2.0
-  inventory_penalty: 0.0005
+  inventory_penalty: 0.001
   impact_penalty: 0.0002
   step_interval_ms: 1000
   episode_length: 256
   order_size: 10.0
   max_inventory: 100.0
-
 model:
   hidden_dim: 128
   obs_dim: 20
   action_dim: 6
-
 rl:
   lr: 0.0003
   gamma: 0.99
   lam: 0.95
   clip: 0.2
-  kl_target: 0.02
-  kl_coeff_init: 0.5
+  kl_target: 0.01
+  kl_coeff_init: 0.8
   entropy: 0.01
   value_coef: 0.5
   max_grad_norm: 1.0
@@ -31,25 +28,23 @@ rl:
   minibatch_size: 64
   epochs: 4
   train_steps: 10
-
 belief:
   n_particles: 32
   transition_noise: 0.03
   latent_dim: 3
-  likelihood_hidden_dims: [32, 32]
-
+  likelihood_hidden_dims:
+  - 32
+  - 32
 search:
-  enabled: false
-  n_rollouts: 16
+  enabled: true
+  n_rollouts: 32
   horizon: 4
   alpha_kl: 0.5
   kl_cap: 0.08
-
 logging:
   tensorboard: true
   run_dir: runs
   checkpoint_dir: checkpoints
-
 advantage_filter:
   enabled: true
   quantile: 0.7

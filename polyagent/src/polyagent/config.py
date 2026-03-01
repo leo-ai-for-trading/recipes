@@ -18,6 +18,7 @@ class EnvConfig(BaseModel):
     step_interval_ms: int = 1000
     episode_length: int = 256
     order_size: float = 10.0
+    max_inventory: float = 100.0
 
 
 class ModelConfig(BaseModel):
@@ -90,4 +91,26 @@ class Settings(BaseSettings):
 
 def load_config(path: Path) -> AppConfig:
     raw: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return AppConfig.model_validate(raw)
+
+
+def save_config(config: AppConfig, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(config.model_dump(), sort_keys=False), encoding="utf-8")
+    return path
+
+
+def apply_dot_overrides(config: AppConfig, overrides: dict[str, Any]) -> AppConfig:
+    raw = config.model_dump()
+    for dotted_key, value in overrides.items():
+        keys = dotted_key.split(".")
+        cursor: dict[str, Any] = raw
+        for key in keys[:-1]:
+            if key not in cursor or not isinstance(cursor[key], dict):
+                raise KeyError(f"Invalid override path: {dotted_key}")
+            cursor = cursor[key]
+        leaf = keys[-1]
+        if leaf not in cursor:
+            raise KeyError(f"Invalid override path: {dotted_key}")
+        cursor[leaf] = value
     return AppConfig.model_validate(raw)
