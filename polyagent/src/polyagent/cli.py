@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
+import numpy as np
+import torch
 import typer
 from rich import print as rprint
 
@@ -11,6 +14,11 @@ from polyagent.config import Settings, load_config
 from polyagent.data.loaders import load_market_data
 from polyagent.data.make_demo_data import make_demo_data
 from polyagent.env.replay_env import ReplayEnv
+from polyagent.models.policy_net import PolicyNet
+from polyagent.models.value_net import ValueNet
+from polyagent.rl.buffers import RolloutBuffer
+from polyagent.rl.ppo_kl import PPOKLTrainer
+from polyagent.rl.utils import compute_gae, normalize, set_seed
 
 app = typer.Typer(help="PolyAgent research sandbox CLI.")
 data_app = typer.Typer(help="Data utilities.")
@@ -33,28 +41,106 @@ def train(
     config: Path = typer.Option(Path("configs/mvp.yaml"), exists=True, help="Config file path."),
 ) -> None:
     cfg = load_config(config)
+    settings = Settings()
+    set_seed(cfg.seed)
+
     df = load_market_data(data)
     env = ReplayEnv(df, cfg.env)
-    obs, _ = env.reset(seed=cfg.seed)
-    total_reward = 0.0
-    for _ in range(min(128, cfg.env.episode_length)):
-        action = int(env.action_space.sample())
-        obs, reward, done, _, _ = env.step(action)
-        total_reward += reward
-        if done:
-            break
+    obs_dim = int(env.observation_space.shape[0])
+    action_dim = int(env.action_space.n)
+
+    device = torch.device("cpu")
+    policy = PolicyNet(obs_dim=obs_dim, hidden_dim=cfg.model.hidden_dim, action_dim=action_dim).to(device)
+    value_net = ValueNet(obs_dim=obs_dim, hidden_dim=cfg.model.hidden_dim).to(device)
+    trainer = PPOKLTrainer(policy=policy, value_net=value_net, cfg=cfg.rl, device=device)
+    buffer = RolloutBuffer()
+
     run_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     run_dir = Path(cfg.logging.run_dir) / run_id
     ckpt_dir = Path(cfg.logging.checkpoint_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    metrics = {"total_reward": total_reward, "obs_mean": float(obs.mean())}
-    (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    (ckpt_dir / "latest.pt").write_text("placeholder-checkpoint", encoding="utf-8")
-    rprint(
-        "[yellow]Step A skeleton training complete[/yellow] "
-        f"(random policy). run_dir={run_dir} checkpoint={ckpt_dir / 'latest.pt'}"
+
+    writer = _maybe_tensorboard_writer(
+        enabled=(cfg.logging.tensorboard and settings.tensorboard_enabled),
+        log_dir=run_dir / "tb",
     )
+
+    obs, _ = env.reset(seed=cfg.seed)
+    train_rewards: list[float] = []
+    for update in range(cfg.rl.train_steps):
+        buffer.clear()
+        batch_reward = 0.0
+        for _ in range(cfg.rl.batch_size):
+            action, log_prob, value, logits = trainer.action_and_value(obs)
+            next_obs, reward, done, _, _ = env.step(action)
+            buffer.add(
+                obs=obs,
+                action=action,
+                reward=reward,
+                done=done,
+                log_prob=log_prob,
+                value=value,
+                logits=logits,
+            )
+            obs = next_obs
+            batch_reward += reward
+            if done:
+                obs, _ = env.reset(seed=cfg.seed)
+
+        arrays = buffer.as_arrays()
+        last_value = trainer.value(obs)
+        advantages, returns = compute_gae(
+            rewards=arrays["rewards"],
+            values=arrays["values"],
+            dones=arrays["dones"],
+            last_value=last_value,
+            gamma=cfg.rl.gamma,
+            lam=cfg.rl.lam,
+        )
+        arrays["advantages"] = normalize(advantages)
+        arrays["returns"] = returns
+        stats = trainer.update(arrays)
+
+        train_rewards.append(batch_reward)
+        if writer is not None:
+            writer.add_scalar("train/reward_batch", batch_reward, update)
+            writer.add_scalar("train/loss_total", stats.total_loss, update)
+            writer.add_scalar("train/loss_policy", stats.policy_loss, update)
+            writer.add_scalar("train/loss_value", stats.value_loss, update)
+            writer.add_scalar("train/entropy", stats.entropy, update)
+            writer.add_scalar("train/kl", stats.kl, update)
+            writer.add_scalar("train/kl_coeff", stats.kl_coeff, update)
+
+        rprint(
+            f"[cyan]update {update + 1}/{cfg.rl.train_steps}[/cyan] "
+            f"reward_batch={batch_reward:.4f} kl={stats.kl:.5f}"
+        )
+
+    if writer is not None:
+        writer.flush()
+        writer.close()
+
+    checkpoint = {
+        "policy_state": policy.state_dict(),
+        "value_state": value_net.state_dict(),
+        "obs_dim": obs_dim,
+        "action_dim": action_dim,
+        "hidden_dim": cfg.model.hidden_dim,
+        "config_path": str(config),
+    }
+    latest_ckpt = ckpt_dir / "latest.pt"
+    torch.save(checkpoint, latest_ckpt)
+    torch.save(checkpoint, ckpt_dir / f"{run_id}.pt")
+
+    metrics = {
+        "mean_batch_reward": float(np.mean(train_rewards)) if train_rewards else 0.0,
+        "last_batch_reward": float(train_rewards[-1]) if train_rewards else 0.0,
+        "n_updates": cfg.rl.train_steps,
+    }
+    (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    (run_dir / "checkpoint.txt").write_text(str(latest_ckpt), encoding="utf-8")
+    rprint(f"[green]Training complete[/green] run_dir={run_dir} checkpoint={latest_ckpt}")
 
 
 @app.command("eval")
@@ -62,21 +148,37 @@ def evaluate(
     data: Path = typer.Option(..., exists=True, help="Parquet/csv replay data path."),
     checkpoint: Path = typer.Option(..., exists=True, help="Checkpoint path."),
     config: Path = typer.Option(Path("configs/mvp.yaml"), exists=True, help="Config path."),
-    use_search: bool = typer.Option(False, help="Enable decision-time search (Step D)."),
+    use_search: bool = typer.Option(False, help="Enable decision-time search."),
 ) -> None:
-    _ = checkpoint
     _ = use_search
     cfg = load_config(config)
+    set_seed(cfg.seed)
+
     df = load_market_data(data)
     env = ReplayEnv(df, cfg.env)
-    _, _ = env.reset(seed=cfg.seed)
+    ckpt = torch.load(checkpoint, map_location="cpu")
+    policy = PolicyNet(
+        obs_dim=int(ckpt["obs_dim"]),
+        hidden_dim=int(ckpt["hidden_dim"]),
+        action_dim=int(ckpt["action_dim"]),
+    )
+    policy.load_state_dict(ckpt["policy_state"])
+    policy.eval()
+
+    obs, _ = env.reset(seed=cfg.seed)
     total_reward = 0.0
-    for _ in range(min(128, cfg.env.episode_length)):
-        _, reward, done, _, _ = env.step(0)
+    steps = 0
+    done = False
+    while not done and steps < cfg.env.episode_length:
+        obs_t = torch.from_numpy(obs.astype(np.float32)).unsqueeze(0)
+        with torch.no_grad():
+            logits = policy(obs_t)
+            action = int(torch.argmax(logits, dim=-1).item())
+        obs, reward, done, _, _ = env.step(action)
         total_reward += reward
-        if done:
-            break
-    rprint(f"[green]Eval complete[/green] reward={total_reward:.6f}")
+        steps += 1
+
+    rprint(f"[green]Eval complete[/green] reward={total_reward:.6f} steps={steps}")
 
 
 @app.command("report")
@@ -86,6 +188,7 @@ def report(
 ) -> None:
     settings = Settings()
     metrics_path = run_dir / "metrics.json"
+    metrics: dict[str, Any]
     if metrics_path.exists():
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     else:
@@ -94,17 +197,34 @@ def report(
         f"# PolyAgent Report ({run_dir.name})",
         "",
         "## Summary",
-        "Step A scaffold report. Detailed experiment management will be extended in later steps.",
+        "Training/evaluation report generated from local run metrics.",
         "",
         "## Metrics",
     ]
-    for key, value in metrics.items():
+    for key, value in sorted(metrics.items()):
         lines.append(f"- {key}: {value}")
-    lines.append("")
-    lines.append(f"- openai_enabled: {bool(settings.openai_api_key)}")
+    lines.extend(
+        [
+            "",
+            "## Notes",
+            "- LLM orchestration is optional and not in the execution loop.",
+            f"- openai_enabled: {bool(settings.openai_api_key)}",
+        ]
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines), encoding="utf-8")
     rprint(f"[green]Report written:[/green] {out}")
+
+
+def _maybe_tensorboard_writer(enabled: bool, log_dir: Path):  # type: ignore[no-untyped-def]
+    if not enabled:
+        return None
+    try:
+        from torch.utils.tensorboard import SummaryWriter
+    except Exception:
+        return None
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return SummaryWriter(log_dir=str(log_dir))
 
 
 def main() -> None:
