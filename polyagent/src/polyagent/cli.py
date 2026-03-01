@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -85,6 +86,65 @@ def train(
     config: Path = typer.Option(Path("configs/mvp.yaml"), exists=True, help="Config file path."),
 ) -> None:
     cfg = load_config(config)
+    run_dir, latest_ckpt, _ = _run_training(cfg=cfg, data=data, config_path=config)
+    rprint(f"[green]Training complete[/green] run_dir={run_dir} checkpoint={latest_ckpt}")
+
+
+@app.command("ablate")
+def ablate(
+    data: Path = typer.Option(..., exists=True, help="Parquet/csv replay data path."),
+    config: Path = typer.Option(
+        Path("configs/mvp_reward_tuned.yaml"),
+        exists=True,
+        help="Base config path for ablation runs.",
+    ),
+    seeds: str = typer.Option("7,11,19", help="Comma-separated seeds."),
+    use_search: bool = typer.Option(True, help="Evaluate with decision-time search."),
+    out: Path = typer.Option(
+        Path("reports/ablation_summary.json"),
+        help="Output JSON summary path.",
+    ),
+) -> None:
+    base = load_config(config)
+    seed_values = [int(s.strip()) for s in seeds.split(",") if s.strip()]
+    if not seed_values:
+        raise typer.Exit(code=1)
+
+    rows: list[dict[str, Any]] = []
+    for seed in seed_values:
+        cfg = base.model_copy(update={"seed": seed})
+        rprint(f"[cyan]Ablation seed={seed}[/cyan]")
+        run_dir, latest_ckpt, train_metrics = _run_training(cfg=cfg, data=data, config_path=config)
+        eval_metrics = _run_evaluation(
+            cfg=cfg,
+            data=data,
+            checkpoint=latest_ckpt,
+            use_search=use_search,
+            print_result=True,
+        )
+        rows.append(
+            {
+                "seed": seed,
+                "run_dir": str(run_dir),
+                "checkpoint": str(latest_ckpt),
+                "train_mean_batch_reward": float(train_metrics["mean_batch_reward"]),
+                "train_last_batch_reward": float(train_metrics["last_batch_reward"]),
+                "eval_reward": float(eval_metrics["reward"]),
+                "eval_steps": int(eval_metrics["steps"]),
+                "search_enabled": bool(eval_metrics["search"]),
+                "avg_search_kl": float(eval_metrics["avg_search_kl"]),
+            }
+        )
+
+    avg_eval = float(np.mean([row["eval_reward"] for row in rows]))
+    summary = {"config": str(config), "seeds": seed_values, "avg_eval_reward": avg_eval, "runs": rows}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    rprint(f"[green]Ablation summary written:[/green] {out}")
+    rprint(f"[green]Average eval reward:[/green] {avg_eval:.6f}")
+
+
+def _run_training(*, cfg, data: Path, config_path: Path) -> tuple[Path, Path, dict[str, float]]:
     settings = Settings()
     set_seed(cfg.seed)
 
@@ -205,7 +265,7 @@ def train(
         "hidden_dim": cfg.model.hidden_dim,
         "belief_latent_dim": cfg.belief.latent_dim,
         "belief_hidden_dims": cfg.belief.likelihood_hidden_dims,
-        "config_path": str(config),
+        "config_path": str(config_path),
     }
     latest_ckpt = ckpt_dir / "latest.pt"
     torch.save(checkpoint, latest_ckpt)
@@ -218,7 +278,7 @@ def train(
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     (run_dir / "checkpoint.txt").write_text(str(latest_ckpt), encoding="utf-8")
-    rprint(f"[green]Training complete[/green] run_dir={run_dir} checkpoint={latest_ckpt}")
+    return run_dir, latest_ckpt, metrics
 
 
 @app.command("eval")
@@ -228,8 +288,24 @@ def evaluate(
     config: Path = typer.Option(Path("configs/mvp.yaml"), exists=True, help="Config path."),
     use_search: bool = typer.Option(False, help="Enable decision-time search."),
 ) -> None:
-    _ = use_search
     cfg = load_config(config)
+    _run_evaluation(
+        cfg=cfg,
+        data=data,
+        checkpoint=checkpoint,
+        use_search=use_search,
+        print_result=True,
+    )
+
+
+def _run_evaluation(
+    *,
+    cfg,
+    data: Path,
+    checkpoint: Path,
+    use_search: bool,
+    print_result: bool,
+) -> dict[str, float | int | bool]:
     set_seed(cfg.seed)
 
     df = load_market_data(data)
@@ -301,10 +377,17 @@ def evaluate(
         steps += 1
 
     avg_kl = float(np.mean(kls)) if kls else 0.0
-    rprint(
-        f"[green]Eval complete[/green] reward={total_reward:.6f} "
-        f"steps={steps} search={search_enabled} avg_search_kl={avg_kl:.6f}"
-    )
+    if print_result:
+        rprint(
+            f"[green]Eval complete[/green] reward={total_reward:.6f} "
+            f"steps={steps} search={search_enabled} avg_search_kl={avg_kl:.6f}"
+        )
+    return {
+        "reward": float(total_reward),
+        "steps": int(steps),
+        "search": bool(search_enabled),
+        "avg_search_kl": float(avg_kl),
+    }
 
 
 @app.command("report")

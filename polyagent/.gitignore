@@ -11,3 +11,5 @@ checkpoints/
 reports/*.md
 reports/*.json
 data/*.parquet
+build/
+*.egg-info/

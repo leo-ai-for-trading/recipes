@@ -51,6 +51,7 @@ cp .env.example .env
 ## Config
 
 Main config: `configs/mvp.yaml`
+Reward-focused config: `configs/mvp_reward_tuned.yaml`
 
 Includes:
 - `env` tick, levels, fees, episode params
@@ -77,7 +78,10 @@ polyagent train --data data/demo.parquet --config configs/mvp.yaml
 Evaluate:
 
 ```bash
-polyagent eval --data data/demo.parquet --checkpoint checkpoints/latest.pt --use-search true
+polyagent eval --data data/demo.parquet --checkpoint checkpoints/latest.pt --use-search
+
+polyagent eval --data data/demo.parquet --checkpoint checkpoints/latest.pt
+```
 
 Apply report suggestions to produce an improved config:
 
@@ -87,6 +91,16 @@ polyagent improve-from-report \
   --base-config configs/mvp.yaml \
   --out configs/mvp_improved.yaml
 ```
+
+Run multi-seed ablation and get a summary JSON:
+
+```bash
+polyagent ablate \
+  --data data/demo.parquet \
+  --config configs/mvp_reward_tuned.yaml \
+  --seeds 7,11,19 \
+  --use-search \
+  --out reports/ablation_summary.json
 ```
 
 Generate report (non-LLM always, LLM optional if `OPENAI_API_KEY` set):
