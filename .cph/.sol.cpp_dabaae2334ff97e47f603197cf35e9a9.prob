@@ -1,0 +1,1 @@
+{"name":"Local: sol","url":"/Users/attiliopittelli/Desktop/Coding/sol.cpp","tests":[{"id":1676226652377,"input":"4\n33 44 11 22\n","output":"2"},{"id":1676226661484,"input":"7\n10 10 58 31 63 40 76","output":"10"}],"interactive":false,"memoryLimit":1024,"timeLimit":3000,"srcPath":"/Users/attiliopittelli/Desktop/Coding/sol.cpp","group":"local","local":true}

@@ -1,0 +1,1 @@
+{"name":"Local: chef","url":"/Users/attiliopittelli/Desktop/Coding/chef.py","tests":[{"id":1670530304729,"input":"6 6 4","output":"4"}],"interactive":false,"memoryLimit":1024,"timeLimit":3000,"srcPath":"/Users/attiliopittelli/Desktop/Coding/chef.py","group":"local","local":true}
